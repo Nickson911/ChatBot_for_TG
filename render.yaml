@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: telegram-gemini-bot
+    env: docker
+    buildCommand: mvn clean package
+    startCommand: java -jar target/ChatBot_for_TG-0.0.1-SNAPSHOT.jar
+    envVars:
+      - key: BOT_USERNAME
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
