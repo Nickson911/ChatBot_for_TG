@@ -1,11 +1,30 @@
 package ru.netology.chatbot_for_tg.service;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.*;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.core5.util.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class GptService {
@@ -13,52 +32,82 @@ public class GptService {
     @Value("${gemini.api.key}")
     private String apiKey;
     private final RestTemplate restTemplate;
-    private final String GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent";
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private static final String API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent";
+    private static final Logger log = LoggerFactory.getLogger(GptService.class);
+    private CloseableHttpClient httpClient;
 
     public GptService() {
         this.restTemplate = new RestTemplate();
+    }
+
+    @PostConstruct
+    public void init() {
+        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
+        connectionManager.setMaxTotal(50);
+        connectionManager.setDefaultMaxPerRoute(10);
+
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setConnectionRequestTimeout(Timeout.of(5, TimeUnit.SECONDS))
+                .setResponseTimeout(Timeout.of(30, TimeUnit.SECONDS))
+                .build();
+
+        httpClient = HttpClients.custom()
+                .setConnectionManager(connectionManager)
+                .setDefaultRequestConfig(requestConfig)
+                .build();
+
+        HttpComponentsClientHttpRequestFactory requestFactory = new HttpComponentsClientHttpRequestFactory(httpClient);
+        restTemplate.setRequestFactory(requestFactory);
     }
 
     public String getGptResponse(String prompt) {
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
-            
-            Map<String, Object> part = new HashMap<>();
-            part.put("text", prompt);
+            headers.set("x-goog-api-key", apiKey);
 
             Map<String, Object> content = new HashMap<>();
-            content.put("parts", Collections.singletonList(part));
+            content.put("text", prompt);
 
             Map<String, Object> requestBody = new HashMap<>();
-            requestBody.put("contents", Collections.singletonList(content));
-
-            String url = GEMINI_API_URL + "?key=" + apiKey;
+            requestBody.put("contents", Collections.singletonList(Collections.singletonMap("parts", Collections.singletonList(content))));
             
-            HttpEntity<Map<String, Object>> requestEntity = new HttpEntity<>(requestBody, headers);
-
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+            
             ResponseEntity<Map> response = restTemplate.exchange(
-                url,
+                API_URL,
                 HttpMethod.POST,
-                requestEntity,
+                request,
                 Map.class
             );
 
-            Map responseBody = response.getBody();
-            if (responseBody != null && responseBody.containsKey("candidates")) {
-                List<Map<String, Object>> candidates = (List<Map<String, Object>>) responseBody.get("candidates");
-                if (!candidates.isEmpty()) {
-                    Map<String, Object> candidate = candidates.get(0);
-                    Map<String, Object> content1 = (Map<String, Object>) candidate.get("content");
-                    List<Map<String, Object>> parts = (List<Map<String, Object>>) content1.get("parts");
-                    return (String) parts.get(0).get("text");
+            if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+                try {
+                    List<Map<String, Object>> candidates = (List<Map<String, Object>>) response.getBody().get("candidates");
+                    if (candidates != null && !candidates.isEmpty()) {
+                        Map<String, Object> content1 = (Map<String, Object>) candidates.get(0).get("content");
+                        List<Map<String, Object>> parts = (List<Map<String, Object>>) content1.get("parts");
+                        return (String) parts.get(0).get("text");
+                    }
+                } catch (Exception e) {
+                    log.error("Error parsing Gemini API response", e);
+                    return "Извините, произошла ошибка при обработке ответа.";
                 }
             }
-            return "Извините, не удалось сгенерировать ответ.";
+            
+            return "Не удалось получить ответ от API.";
         } catch (Exception e) {
-            e.printStackTrace();
-            return "Извините, произошла ошибка при обработке вашего запроса: " + e.getMessage();
+            log.error("Error calling Gemini API", e);
+            return "Произошла ошибка при обращении к API.";
+        }
+    }
+
+    @PreDestroy
+    public void cleanup() {
+        try {
+            httpClient.close();
+        } catch (IOException e) {
+            log.error("Error closing HTTP client", e);
         }
     }
 }
